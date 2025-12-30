@@ -1,14 +1,11 @@
-from flask import session
-
-from flask import Flask, render_template, request, redirect
+from flask import Flask, render_template, request, redirect, session
 import sqlite3
 
 app = Flask(__name__)
 app.secret_key = "library_secret_key"
 
-
 # -------------------------------
-# Database Connection Function
+# Database Connection
 # -------------------------------
 def get_db_connection():
     conn = sqlite3.connect("library.db")
@@ -16,39 +13,104 @@ def get_db_connection():
     return conn
 
 # -------------------------------
-# Home Page (User Search Page)
+# Role Selection Page
 # -------------------------------
 @app.route("/")
-def home():
-    if "role" not in session:
-        return render_template("role_select.html")
+def role_select():
+    return render_template("role_select.html")
 
-    if session["role"] == "admin":
-        return redirect("/admin")
+# -------------------------------
+# Login (Admin / Student)
+# -------------------------------
+@app.route("/login/<role>", methods=["GET", "POST"])
+def login(role):
+    if role not in ["admin", "student"]:
+        return redirect("/")
 
-    return redirect("/student")
+    error = None
 
+    if request.method == "POST":
+        username = request.form["username"]
+        password = request.form["password"]
 
+        conn = get_db_connection()
+        user = conn.execute(
+            "SELECT * FROM users WHERE username=? AND password=? AND role=?",
+            (username, password, role)
+        ).fetchone()
+        conn.close()
+
+        if user:
+            session["user_id"] = user["id"]
+            session["role"] = user["role"]
+
+            if role == "admin":
+                return redirect("/admin")
+            else:
+                return redirect("/student")
+        else:
+            error = "Invalid username or password"
+
+    return render_template("login.html", role=role, error=error)
+
+# -------------------------------
+# Signup (Student Only)
+# -------------------------------
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    message = None
+
+    if request.method == "POST":
+        username = request.form["username"]
+        password = request.form["password"]
+
+        conn = get_db_connection()
+        existing = conn.execute(
+            "SELECT * FROM users WHERE username=?",
+            (username,)
+        ).fetchone()
+
+        if existing:
+            message = "Username already exists"
+        else:
+            conn.execute(
+                "INSERT INTO users (username, password, role) VALUES (?, ?, 'student')",
+                (username, password)
+            )
+            conn.commit()
+            conn.close()
+            return redirect("/login/student")
+
+        conn.close()
+
+    return render_template("signup.html", message=message)
 
 # -------------------------------
 # Admin Dashboard
 # -------------------------------
 @app.route("/admin")
 def admin():
-    # Check if the user is logged in and is an admin
-    if "role" not in session or session["role"] != "admin":
-        return redirect("/login")
-    
-    # Render the admin dashboard
+    if session.get("role") != "admin":
+        return redirect("/")
     return render_template("admin.html")
 
-
+# -------------------------------
+# Student Home
+# -------------------------------
+@app.route("/student")
+def student_home():
+    if session.get("role") != "student":
+        return redirect("/")
+    return render_template("index.html")
 
 # -------------------------------
 # Add Book (Admin)
 # -------------------------------
 @app.route("/admin/add", methods=["GET", "POST"])
 def add_book():
+    if session.get("role") != "admin":
+        return redirect("/")
+
     if request.method == "POST":
         book_id = int(request.form["book_id"])
         title = request.form["title"]
@@ -63,32 +125,27 @@ def add_book():
         conn.commit()
         conn.close()
         return redirect("/admin")
+
     return render_template("add_book.html")
 
-
 # -------------------------------
-# Search Books (User)
+# Search Books
 # -------------------------------
 @app.route("/search")
 def search():
-    query = request.args.get("query", "").strip()
+    query = request.args.get("query", "")
     conn = get_db_connection()
 
-    # CASE 1: Numeric input → search by ID
     if query.isdigit():
         books = conn.execute(
-            "SELECT * FROM books WHERE id = ?",
+            "SELECT * FROM books WHERE id=?",
             (int(query),)
         ).fetchall()
     else:
-        # CASE 2: Text input → search by title, author, category
         books = conn.execute(
             """
             SELECT * FROM books
-            WHERE LOWER(title) LIKE LOWER(?)
-               OR LOWER(author) LIKE LOWER(?)
-               OR LOWER(category) LIKE LOWER(?)
-            ORDER BY title
+            WHERE title LIKE ? OR author LIKE ? OR category LIKE ?
             """,
             (f"%{query}%", f"%{query}%", f"%{query}%")
         ).fetchall()
@@ -97,197 +154,89 @@ def search():
     return render_template("search.html", books=books)
 
 # -------------------------------
-# Issue Book (Admin)
+# Issue Book
 # -------------------------------
 @app.route("/admin/issue", methods=["GET", "POST"])
 def issue_book():
+    if session.get("role") != "admin":
+        return redirect("/")
+
     message = None
+
     if request.method == "POST":
-        book_id = request.form["book_id"]
-        try:
-            book_id = int(book_id)
-        except ValueError:
-            message = "Invalid Book ID."
-            return render_template("issue_book.html", message=message)
+        book_id = int(request.form["book_id"])
 
         conn = get_db_connection()
         book = conn.execute(
-            "SELECT * FROM books WHERE id = ?",
-            (book_id,)
-        ).fetchone()
-
-        if book and book["available"] == 1:
-            conn.execute(
-                "UPDATE books SET available = 0 WHERE id = ?",
-                (book_id,)
-            )
-            conn.commit()
-            message = "Book issued successfully."
-        else:
-            message = "Book not found or already issued."
-
-        conn.close()
-    return render_template("issue_book.html", message=message)
-
-# -------------------------------
-# Return Book (Admin)
-# -------------------------------
-@app.route("/admin/return", methods=["GET", "POST"])
-def return_book():
-    message = None
-    if request.method == "POST":
-        book_id = request.form["book_id"]
-        try:
-            book_id = int(book_id)
-        except ValueError:
-            message = "Invalid Book ID."
-            return render_template("return_book.html", message=message)
-
-        conn = get_db_connection()
-        book = conn.execute(
-            "SELECT * FROM books WHERE id = ?",
-            (book_id,)
-        ).fetchone()
-
-        if book and book["available"] == 0:
-            conn.execute(
-                "UPDATE books SET available = 1 WHERE id = ?",
-                (book_id,)
-            )
-            conn.commit()
-            message = "Book returned successfully."
-        else:
-            message = "Book not found or already available."
-
-        conn.close()
-    return render_template("return_book.html", message=message)
-
-# -------------------------------
-# Delete Book (Admin)
-# -------------------------------
-@app.route("/admin/delete", methods=["GET", "POST"])
-def delete_book():
-    message = None
-    if request.method == "POST":
-        book_id = request.form["book_id"]
-        try:
-            book_id = int(book_id)
-        except ValueError:
-            message = "Invalid Book ID."
-            return render_template("delete_book.html", message=message)
-
-        conn = get_db_connection()
-        book = conn.execute(
-            "SELECT * FROM books WHERE id = ?",
+            "SELECT * FROM books WHERE id=? AND available=1",
             (book_id,)
         ).fetchone()
 
         if book:
             conn.execute(
-                "DELETE FROM books WHERE id = ?",
+                "UPDATE books SET available=0 WHERE id=?",
                 (book_id,)
             )
             conn.commit()
-            message = f"Book ID {book_id} deleted successfully."
+            message = "Book issued successfully"
         else:
-            message = "Book not found."
+            message = "Book not available"
 
         conn.close()
-    return render_template("delete_book.html", message=message)
 
+    return render_template("issue_book.html", message=message)
 
-#-----------------------------------------
-# login route 
-#------------------------------------------
-@app.route("/login/<role>", methods=["GET", "POST"])
-def login(role):
-    error = None
-
-    if role not in ["admin", "student"]:
+# -------------------------------
+# Return Book
+# -------------------------------
+@app.route("/admin/return", methods=["GET", "POST"])
+def return_book():
+    if session.get("role") != "admin":
         return redirect("/")
 
-    if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
-
-        conn = get_db_connection()
-        user = conn.execute(
-            "SELECT * FROM users WHERE username = ? AND password = ? AND role = ?",
-            (username, password, role)
-        ).fetchone()
-        conn.close()
-
-        if user:
-            session["user_id"] = user["id"]
-            session["role"] = user["role"]
-
-            print("LOGIN SUCCESS:", user["username"], user["role"])  # debug
-
-            if role == "admin":
-                return redirect("/admin")
-            else:
-                return redirect("/student")
-        else:
-            error = "Invalid username or password"
-
-    return render_template("login.html", error=error, role=role)
-
-
-# ------------------------------------------
-# Signup route
-# ------------------------------------------
-@app.route("/signup", methods=["GET", "POST"])
-def signup():
     message = None
 
     if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
+        book_id = int(request.form["book_id"])
 
         conn = get_db_connection()
+        conn.execute(
+            "UPDATE books SET available=1 WHERE id=?",
+            (book_id,)
+        )
+        conn.commit()
+        conn.close()
+        message = "Book returned successfully"
 
-        existing_user = conn.execute(
-            "SELECT * FROM users WHERE username = ?",
-            (username,)
-        ).fetchone()
+    return render_template("return_book.html", message=message)
 
-        if existing_user:
-            message = "Username already exists."
-            conn.close()
-        else:
-            conn.execute(
-                "INSERT INTO users (username, password, role) VALUES (?, ?, 'student')",
-                (username, password)
-            )
-            conn.commit()
-            conn.close()
-
-            session["role"] = "student"
-            return redirect("/student")
-
-    return render_template("signup.html", message=message)
-
-
-
-#------------------------------------------
-# Student route
-#------------------------------------------
-@app.route("/student")
-def student_home():
-    if session.get("role") != "student":
+# -------------------------------
+# Delete Book
+# -------------------------------
+@app.route("/admin/delete", methods=["GET", "POST"])
+def delete_book():
+    if session.get("role") != "admin":
         return redirect("/")
-    return render_template("index.html")
 
+    message = None
 
-#--------------------------------
-# Logout route
-#--------------------------------
+    if request.method == "POST":
+        book_id = int(request.form["book_id"])
+        conn = get_db_connection()
+        conn.execute("DELETE FROM books WHERE id=?", (book_id,))
+        conn.commit()
+        conn.close()
+        message = "Book deleted successfully"
+
+    return render_template("delete_book.html", message=message)
+
+# -------------------------------
+# Logout
+# -------------------------------
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect("/")
-
-
 
 # -------------------------------
 # Run App
