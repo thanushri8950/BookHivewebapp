@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>Add New Book</h2>
+
+    <form method="POST">
+        <input type="number" name="book_id" placeholder="Book id" required>
+        <input type="text" name="title" placeholder="Book Title" required>
+        <input type="text" name="author" placeholder="Author Name" required>
+        <input type="text" name="category" placeholder="Category" required>
+        <button type="submit">Add Book</button>
+    </form>
+</section>
+{% endblock %}
